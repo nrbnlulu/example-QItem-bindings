@@ -1,10 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 cmake_policy(VERSION 3.16)
-
+set(CLANG_INSTALL_DIR ${CMAKE_SOURCE_DIR}/libclang)
 # Enable policy to not use RPATH settings for install_name on macOS.
 if(POLICY CMP0068)
   cmake_policy(SET CMP0068 NEW)
 endif()
+
+# Enable policy to run automoc on generated files.
+if(POLICY CMP0071)
+  cmake_policy(SET CMP0071 NEW)
+endif()
+
+
 
 # Consider changing the project name to something relevant for you.
 project(SampleBinding)
@@ -36,28 +43,34 @@ set(typesystem_file ${CMAKE_SOURCE_DIR}/bindings.xml)
 set(generated_sources
     ${CMAKE_CURRENT_BINARY_DIR}/${bindings_library}/universe_module_wrapper.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/${bindings_library}/icecream_wrapper.cpp
-    ${CMAKE_CURRENT_BINARY_DIR}/${bindings_library}/truck_wrapper.cpp)
+    ${CMAKE_CURRENT_BINARY_DIR}/${bindings_library}/truck_wrapper.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/${bindings_library}/ibutton_wrapper.cpp
+    )
+    
 
 
 # ================================== Shiboken detection ======================================
 # Use provided python interpreter if given.
+set(CMAKE_PREFIX_PATH "/home/nir/Qt/6.3.1/gcc_64/lib/cmake")
+
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Quick)
+
 if(NOT python_interpreter)
     find_program(python_interpreter "python")
 endif()
 message(STATUS "Using python interpreter: ${python_interpreter}")
 
 # Macro to get various pyside / python include / link flags and paths.
-# Uses the not entirely supported utils/pyside_config.py file.
+# Uses the not entirely supported pyside_config.py file.
 macro(pyside_config option output_var)
     if(${ARGC} GREATER 2)
         set(is_list ${ARGV2})
     else()
         set(is_list "")
     endif()
-
+include(FindPythonInterp)
     execute_process(
-      COMMAND ${python_interpreter} "${CMAKE_SOURCE_DIR}/../utils/pyside_config.py"
-              ${option}
+      COMMAND ${PYTHON_EXECUTABLE} "${CMAKE_SOURCE_DIR}/pyside_config.py" ${option}
       OUTPUT_VARIABLE ${output_var}
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 
@@ -69,17 +82,44 @@ macro(pyside_config option output_var)
     endif()
 endmacro()
 
-# Query for the shiboken generator path, Python path, include paths and linker flags.
+# Query for the shiboken-generator path, pyside path, Python path, include paths and linker flags.
 pyside_config(--shiboken-module-path shiboken_module_path)
 pyside_config(--shiboken-generator-path shiboken_generator_path)
+pyside_config(--pyside-path pyside_path)
+
 pyside_config(--python-include-path python_include_dir)
-pyside_config(--shiboken-generator-include-path shiboken_include_dir 1)
-pyside_config(--shiboken-module-shared-libraries-cmake shiboken_shared_libraries 0)
+pyside_config(--shiboken-generator-include-path shiboken_generator_include_dir 1)
+pyside_config(--pyside-include-path pyside_include_dir 1)
+
 pyside_config(--python-link-flags-cmake python_linking_data 0)
+pyside_config(--shiboken-module-shared-libraries-cmake shiboken_module_shared_libraries 0)
+pyside_config(--pyside-shared-libraries-cmake pyside_shared_libraries 0)
 
 set(shiboken_path "${shiboken_generator_path}/shiboken6${CMAKE_EXECUTABLE_SUFFIX}")
 if(NOT EXISTS ${shiboken_path})
     message(FATAL_ERROR "Shiboken executable not found at path: ${shiboken_path}")
+endif()
+
+# ======================================================================
+
+# Get all relevant Qt include dirs, to pass them on to shiboken.
+get_property(QT_CORE_INCLUDE_DIRS TARGET Qt6::Core PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
+get_property(QT_GUI_INCLUDE_DIRS TARGET Qt6::Gui PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
+get_property(QT_WIDGETS_INCLUDE_DIRS TARGET Qt6::Widgets PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
+# get_property(QT_QUICK_INCLUDE_DIRS TARGET Qt6::Quick PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
+set(QT_INCLUDE_DIRS ${QT_CORE_INCLUDE_DIRS} ${QT_GUI_INCLUDE_DIRS} ${QT_WIDGETS_INCLUDE_DIRS})
+set(INCLUDES "")
+foreach(INCLUDE_DIR ${QT_INCLUDE_DIRS})
+    list(APPEND INCLUDES "-I${INCLUDE_DIR}")
+endforeach()
+
+# On macOS, check if Qt is a framework build. This affects how include paths should be handled.
+get_target_property(QtCore_is_framework Qt6::Core FRAMEWORK)
+if (QtCore_is_framework)
+    get_target_property(qt_core_library_location Qt6::Core LOCATION)
+    get_filename_component(qt_core_library_location_dir "${qt_core_library_location}" DIRECTORY)
+    get_filename_component(lib_dir "${qt_core_library_location_dir}/../" ABSOLUTE)
+    list(APPEND INCLUDES "--framework-include-paths=${lib_dir}")
 endif()
 
 
@@ -91,6 +131,7 @@ endif()
 # take care of this properly with some custom script or tool).
 # =============================================================================================
 # Enable rpaths so that the built shared libraries find their dependencies.
+set(CMAKE_MACOSX_RPATH 1)
 set(CMAKE_SKIP_BUILD_RPATH FALSE)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 set(CMAKE_INSTALL_RPATH ${shiboken_module_path} ${CMAKE_CURRENT_SOURCE_DIR})
@@ -104,7 +145,7 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 
 # Define the sample shared library for which we will create bindings.
-set(${sample_library}_sources icecream.cpp truck.cpp)
+set(${sample_library}_sources icecream.cpp truck.cpp ibutton.cpp)
 add_library(${sample_library} SHARED ${${sample_library}_sources})
 set_property(TARGET ${sample_library} PROPERTY PREFIX "")
 
@@ -117,11 +158,16 @@ target_compile_definitions(${sample_library} PRIVATE BINDINGS_BUILD)
 
 
 # Set up the options to pass to shiboken.
-set(shiboken_options --generator-set=shiboken --enable-parent-ctor-heuristic
-    --enable-return-value-heuristic --use-isnull-as-nb_nonzero
+set(shiboken_options --generator-set=shiboken 
+    --enable-parent-ctor-heuristic
+    --enable-pyside-extensions
+    --enable-return-value-heuristic 
+    --use-isnull-as-nb_nonzero
     --avoid-protected-hack
+    ${INCLUDES}
     -I${CMAKE_SOURCE_DIR}
     -T${CMAKE_SOURCE_DIR}
+    -T${pyside_path}/typesystems
     --output-directory=${CMAKE_CURRENT_BINARY_DIR}
     )
 
@@ -136,7 +182,13 @@ add_custom_command(OUTPUT ${generated_sources}
                     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
                     COMMENT "Running generator for ${typesystem_file}.")
 
-
+# We need to include the headers for the module bindings that we use.
+set(pyside_additional_includes "")
+foreach(include_dir ${pyside_include_dir})
+    list(APPEND pyside_additional_includes "${include_dir}/QtCore")
+    list(APPEND pyside_additional_includes "${include_dir}/QtGui")
+    list(APPEND pyside_additional_includes "${include_dir}/QtWidgets")
+endforeach()
 # =============================== CMake target - bindings_library =============================
 
 
@@ -145,13 +197,19 @@ set(${bindings_library}_sources ${generated_sources})
 
 # Define and build the bindings library.
 add_library(${bindings_library} MODULE ${${bindings_library}_sources})
+# Enable automoc.
+set_property(TARGET ${bindings_library} PROPERTY AUTOMOC 1)
 
 # Apply relevant include and link flags.
 target_include_directories(${bindings_library} PRIVATE ${python_include_dir})
-target_include_directories(${bindings_library} PRIVATE ${shiboken_include_dir})
+target_include_directories(${bindings_library} PRIVATE ${shiboken_generator_include_dir})
+target_include_directories(${bindings_library} PRIVATE ${pyside_include_dir})
+target_include_directories(${bindings_library} PRIVATE ${pyside_additional_includes})
 target_include_directories(${bindings_library} PRIVATE ${CMAKE_SOURCE_DIR})
 
-target_link_libraries(${bindings_library} PRIVATE ${shiboken_shared_libraries})
+target_link_libraries(${bindings_library} PRIVATE ${shiboken_module_shared_libraries})
+target_link_libraries(${bindings_library} PRIVATE Qt6::Core)
+target_link_libraries(${bindings_library} PRIVATE ${pyside_shared_libraries})
 target_link_libraries(${bindings_library} PRIVATE ${sample_library})
 
 # Adjust the name of generated module.

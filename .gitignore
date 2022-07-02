@@ -2,3 +2,4 @@ venv
 pyside-setup
 doc
 libclang
+build

@@ -53,5 +53,6 @@
 
 #include "icecream.h"
 #include "truck.h"
+#include "ibutton.h"
 
 #endif // BINDINGS_H

@@ -51,6 +51,9 @@
 ****************************************************************************/
 -->
 <typesystem package="Universe">
+    <load-typesystem name="typesystem_core_common.xml" generate="no"/>
+    <object-type name="IButton">
+    </object-type>
 
     <object-type name="Icecream">
         <!-- By default the ownership of an object created in Python is tied
